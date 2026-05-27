@@ -8,29 +8,54 @@ const sql = postgres(process.env.POSTGRES_URL!, { ssl: "require" });
 
 const FormSchema = z.object({
   id: z.string(),
-  customer_id: z.string(),
-  amount: z.coerce.number(),
-  status: z.enum(["pending", "paid"]),
+  customer_id: z.string({
+    message: "You must select a customer for the invoice",
+  }),
+  amount: z.coerce.number().gte(0, "Amount must be a positive number"),
+  status: z.enum(["pending", "paid"], {
+    message: "Select pending or paid for status",
+  }),
   date: z.string(),
 });
 
+export type State = {
+  errors?: {
+    customer_id?: string[];
+    amount?: string[];
+    status?: string[];
+  };
+  message?: string;
+};
+
 const CreateOrUpdateInvoice = FormSchema.omit({ id: true, date: true });
 
-export async function createInvoice(formData: FormData) {
-  const { customer_id, amount, status } = CreateOrUpdateInvoice.parse({
-    customer_id: formData.get("customerId"),
+export async function createInvoice(prevState: State, formData: FormData) {
+  const validatedFields = CreateOrUpdateInvoice.safeParse({
+    customerId: formData.get("customerId"),
     amount: formData.get("amount"),
     status: formData.get("status"),
   });
 
+  if (!validatedFields.success) {
+    return {
+      errors: validatedFields.error.flatten().fieldErrors,
+      message: "Missing Fields. Failed to Create Invoice.",
+    };
+  }
+
+  const { customer_id, amount, status } = validatedFields.data;
   const amountInCents = amount * 100;
   const date = new Date().toISOString().split("T")[0];
 
   try {
-    await sql`INSERT INTO invoices (customer_id, amount, status, date) VALUES(${customer_id}, ${amountInCents}, ${status}, ${date})`;
+    await sql`
+      INSERT INTO invoices (customer_id, amount, status, date)
+      VALUES (${customer_id}, ${amountInCents}, ${status}, ${date})
+    `;
   } catch (error) {
-    console.log("error: ", error);
-    throw new Error("ERROR: failed to create invoice");
+    return {
+      message: "Database Error: Failed to Create Invoice.",
+    };
   }
 
   revalidatePath("/dashboard/invoices");
@@ -58,8 +83,6 @@ export async function updateInvoice(id: string, formData: FormData) {
 }
 
 export async function deleteInvoice(id: string) {
-  throw new Error("ERROR: failed to delete invoice");
-
   try {
     await sql`DELETE FROM invoices WHERE id=${id}`;
   } catch (error) {
